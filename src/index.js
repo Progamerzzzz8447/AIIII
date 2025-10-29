@@ -63,8 +63,8 @@ const GENERIC_RESPONSES = [
   "hey :)",
   "hey!",
   // fallback short replies for punctuation-only
-  "Please say a little more so I can help.",
-  "Say something I can help with — a question or request."
+  "Hey there, how you doing today?",
+  "Hello! How are you?"
 ];
 
 // Heuristic regexes for "too generic" messages
