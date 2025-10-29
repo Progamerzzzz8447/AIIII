@@ -228,7 +228,7 @@ async function safeRespond(message, content) {
     const isRate = msg.includes("429") || /rate limit|quota|throttl|temporar/i.test(msg);
     if (isRate) {
       try {
-        await message.reply("I'm a bit overloaded right now — try again in a moment. (fallback)");
+        await message.reply("I'm a bit overloaded right now — try again in a moment.");
       } catch {}
       return;
     }
