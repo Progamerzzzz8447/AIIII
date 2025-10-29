@@ -1,5 +1,6 @@
-// Google Generative Language API via REST (no SDK), using v1beta and 2.x/1.5 models.
-// Works on Node 18+ (global fetch). Keeps replies < 1800 chars for Discord.
+// src/llm.js
+// Google Generative Language API via REST (no SDK), using v1beta and 2.x/1.5 model fallbacks.
+// Keeps replies < 1800 chars for Discord.
 
 const MODEL_CHAIN = [
   process.env.GEMINI_MODEL || "gemini-2.5-flash", // preferred
@@ -8,13 +9,12 @@ const MODEL_CHAIN = [
   "gemini-1.5-pro"
 ];
 
-// Per Google’s current reference, v1beta is widely available.
+// v1beta base per Google's docs/examples
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 async function callGemini({ apiKey, model, system, user }) {
   if (!apiKey) throw new Error("Missing GEMINI_API_KEY");
 
-  // Prefix system persona into the user prompt for broad compatibility.
   const sys = (system || "").trim();
   const prompt = sys ? `${sys}\n\nUser: ${user}` : user;
 
@@ -26,7 +26,6 @@ async function callGemini({ apiKey, model, system, user }) {
         parts: [{ text: prompt }]
       }
     ]
-    // generationConfig / safetySettings can be added here if needed
   };
 
   const res = await fetch(url, {
@@ -40,13 +39,17 @@ async function callGemini({ apiKey, model, system, user }) {
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Gemini HTTP ${res.status}: ${text}`);
+    // Throw a structured error string so caller can detect 429/rate/404 easily.
+    const err = new Error(`Gemini HTTP ${res.status}: ${text}`);
+    err.status = res.status;
+    err.body = text;
+    throw err;
   }
 
   const data = await res.json();
   const parts = data?.candidates?.[0]?.content?.parts || [];
   const out = parts.map(p => p.text || "").join("\n").trim();
-  return (out || "…").slice(0, 1800); // keep under Discord's 2000-char limit
+  return (out || "…").slice(0, 1800);
 }
 
 export async function llmReply({ apiKey, system, user }) {
@@ -54,16 +57,22 @@ export async function llmReply({ apiKey, system, user }) {
     try {
       return await callGemini({ apiKey, model, system, user });
     } catch (err) {
-      const msg = String(err?.message || err);
-      // On NOT_FOUND (404) try next model; else bail with a readable message.
-      const isNotFound =
-        msg.includes("404") ||
-        msg.toLowerCase().includes("not found");
+      const msg = String(err?.message || err).toLowerCase();
       console.error(`Gemini error on "${model}":`, msg);
+      // If provider indicates rate limit (429) or other non-not-found problems, bubble up error
+      // so caller can decide to fallback to generic reply. For NOT_FOUND, try next model.
+      const status = err?.status;
+      const isNotFound =
+        msg.includes("404") || msg.includes("not found") || status === 404;
       if (!isNotFound) {
-        return "LLM call failed (check API key/quotas/network).";
+        // bubble up (includes 429, 5xx, quota errors)
+        throw err;
       }
+      // else continue to next fallback model
     }
   }
-  return "No compatible Gemini model found. Set GEMINI_MODEL=gemini-2.5-flash (or 2.0-flash) and redeploy.";
+  // If we reach here, no model found — surface a specific error for caller to handle.
+  const e = new Error("No compatible Gemini model found (all fallbacks 404).");
+  e.status = 404;
+  throw e;
 }
