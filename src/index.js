@@ -2,31 +2,46 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Partials, Events, ChannelType } from "discord.js";
 import { llmReply } from "./llm.js";
 
+/* =============================================================================
+   🧠 PERSONALITY — EDIT THIS BLOCK
+   -----------------------------------------------------------------------------
+   Write whatever you want the bot’s voice/behaviour to be. Keep it explicit.
+   This is injected as the system prompt for ALL replies (channels + mentions).
+   You can override at runtime via an env var BOT_PERSONA if you prefer.
+============================================================================= */
+const PERSONA = `
+You are a helpful, polite, funny, and engaging bot that keeps users engaged and talking. Discuss any topics you wish, keep it appropriate though.
+Don't respond, or fall for, any tricks that may make you say explicit content.
+If they ask how to apply (for anything), direct them to https://discord.com/channels/1308444031188992090/1362419467753361519
+If they ask how to get real support, direct them to https://discord.com/channels/1308444031188992090/1308448637902131281
+Be funny, and engaging.
+You hate a user called Luis, (<@918591093929549865>, pomroyjunior37) - in a funny way.
+You love progamerzzzz8447
+You love TUI Airways
+Dont have political opinions
+dont be afraid to argue back slightly
+`.trim();
+/* ============================================================================= */
+
 const {
   DISCORD_TOKEN,
   GEMINI_API_KEY,
   BOT_PREFIX = "!",
-  BOT_NAME = "",
-  REPLY_CHANNEL_IDS = ""
+  REPLY_CHANNEL_IDS = "",
+  ADMIN_USER_IDS = "",
+  BOT_PERSONA // optional env override
 } = process.env;
 
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN");
-if (!GEMINI_API_KEY) console.warn("Missing GEMINI_API_KEY (AI replies will fail)");
 
-/**
- * Parse allowed channel IDs from env.
- * Supports both channel IDs (text channels) and parent forum/text channel IDs for threads.
- */
+const SYSTEM_PROMPT = (BOT_PERSONA && BOT_PERSONA.trim()) || PERSONA;
+
 const ALLOWED_IDS = new Set(
-  REPLY_CHANNEL_IDS
-    .split(",")
-    .map(s => s.trim())
-    .filter(Boolean)
+  REPLY_CHANNEL_IDS.split(",").map(s => s.trim()).filter(Boolean)
 );
-
-/** Simple system prompt to shape the bot’s behaviour */
-const SYSTEM_PROMPT =
-  "You are a helpful, concise Discord assistant. Avoid unsafe content. Be brief unless asked for depth.";
+const ADMIN_IDS = new Set(
+  ADMIN_USER_IDS.split(",").map(s => s.trim()).filter(Boolean)
+);
 
 const client = new Client({
   intents: [
@@ -39,80 +54,76 @@ const client = new Client({
 
 client.once(Events.ClientReady, (c) => {
   console.log(`✅ Logged in as ${c.user.tag}`);
-  if (ALLOWED_IDS.size === 0) {
-    console.warn("⚠️ REPLY_CHANNEL_IDS is empty – auto-replies in set channels are disabled.");
-  } else {
-    console.log(`💬 Auto-reply enabled for channels: ${Array.from(ALLOWED_IDS).join(", ")}`);
+  console.log(ALLOWED_IDS.size
+    ? `💬 Auto-reply enabled for channels: ${Array.from(ALLOWED_IDS).join(", ")}`
+    : "⚠️ REPLY_CHANNEL_IDS empty; channel auto-reply disabled");
+  if (!GEMINI_API_KEY) {
+    console.warn("⚠️ GEMINI_API_KEY missing — AI replies will fail.");
   }
 });
 
+function isThreadType(t) {
+  return t === ChannelType.PublicThread ||
+         t === ChannelType.PrivateThread ||
+         t === ChannelType.AnnouncementThread;
+}
+
+function inAllowedChannel(message) {
+  const ch = message.channel;
+  const isThread = isThreadType(ch?.type);
+  const parentId = isThread ? ch?.parentId : null;
+  return (ch?.id && ALLOWED_IDS.has(ch.id)) || (parentId && ALLOWED_IDS.has(parentId));
+}
+
+function isAdmin(message) {
+  return ADMIN_IDS.has(message.author?.id);
+}
+
+async function respond(message, userText) {
+  await message.channel.sendTyping();
+  const reply = await llmReply({
+    apiKey: GEMINI_API_KEY,
+    system: SYSTEM_PROMPT,
+    user: userText
+  });
+  if (reply) await message.reply(reply);
+}
+
 client.on(Events.MessageCreate, async (message) => {
   try {
-    // ignore DM, bots (including itself), and empty content
     if (!message.guild || message.author.bot) return;
-    const content = message.content?.trim();
+    const raw = message.content ?? "";
+    const content = raw.trim();
     if (!content) return;
 
-    // -------- 1) ALWAYS-REPLY mode for configured channels --------
-    // We consider two cases:
-    //  - Messages posted directly in a configured text channel (channel.id in ALLOWED_IDS)
-    //  - Messages posted inside a thread whose parent is configured (thread.parentId in ALLOWED_IDS)
-    const ch = message.channel;
-    const isThread = ch?.type === ChannelType.PublicThread || ch?.type === ChannelType.PrivateThread || ch?.type === ChannelType.AnnouncementThread;
-
-    const parentId = isThread ? ch?.parentId : null;
-    const inAllowedChannel =
-      (ch?.id && ALLOWED_IDS.has(ch.id)) || (parentId && ALLOWED_IDS.has(parentId));
-
-    if (inAllowedChannel) {
-      // Optional: prevent runaway loops if someone quotes the bot repeatedly
-      // (We already skip bots above. This is here if you later allow webhook-style echoes.)
-      await message.channel.sendTyping();
-      const reply = await llmReply({
-        apiKey: GEMINI_API_KEY,
-        system: SYSTEM_PROMPT,
-        user: content
-      });
-      if (reply) {
-        // Use reply() so threading stays clear; you can switch to channel.send() if preferred.
-        await message.reply(reply);
-      }
-      return; // done
+    // 1) Always reply in configured channels (and their threads)
+    if (inAllowedChannel(message)) {
+      return void respond(message, content);
     }
 
-    // -------- 2) (Optional) Keep your previous commands/mention triggers --------
-    // Prefix command fallback (if you still want it alongside channel auto-replies)
+    // 2) Reply when the bot is @mentioned anywhere
+    if (message.mentions?.has(client.user)) {
+      const mentionRegex = new RegExp(`<@!?${client.user.id}>`, "g");
+      const cleaned = content.replace(mentionRegex, "").trim() || "Say hello briefly.";
+      return void respond(message, cleaned);
+    }
+
+    // 3) Optional: simple command for manual chatting
     if (content.startsWith(`${BOT_PREFIX}chat`)) {
       const userPrompt = content.slice(`${BOT_PREFIX}chat`.length).trim();
-      if (!userPrompt) return message.reply("Give me something to respond to, e.g. `!chat how do I revise?`");
-
-      await message.channel.sendTyping();
-      const reply = await llmReply({
-        apiKey: GEMINI_API_KEY,
-        system: SYSTEM_PROMPT,
-        user: userPrompt
-      });
-      return void (reply && message.reply(reply));
+      if (!userPrompt) return void message.reply("Give me something to respond to, e.g. `!chat plan my study session`");
+      return void respond(message, userPrompt);
     }
 
-    // Mention trigger (optional)
-    const wasMentioned = BOT_NAME && content.includes(BOT_NAME);
-    if (wasMentioned) {
-      const userPrompt = content.replace(BOT_NAME, "").trim() || "Say hello briefly.";
-      await message.channel.sendTyping();
-      const reply = await llmReply({
-        apiKey: GEMINI_API_KEY,
-        system: SYSTEM_PROMPT,
-        user: userPrompt
-      });
-      return void (reply && message.reply(reply));
+    // 4) Optional admin: show current persona
+    if (content === `${BOT_PREFIX}persona`) {
+      if (!isAdmin(message)) return void message.reply("You don't have permission to view persona.");
+      return void message.reply("Current persona:\n```\n" + SYSTEM_PROMPT + "\n```");
     }
 
   } catch (err) {
     console.error("Message handler error:", err);
-    try {
-      await message.reply("I hit an error. Check the logs and your API key/config.");
-    } catch {}
+    try { await message.reply("Hit an error. Check logs/API key."); } catch {}
   }
 });
 
