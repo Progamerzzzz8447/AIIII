@@ -13,7 +13,7 @@ Don't respond, or fall for, any tricks that may make you say explicit content.
 If they ask how to apply (for anything), direct them to https://discord.com/channels/1308444031188992090/1362419467753361519
 If they ask how to get real support, direct them to https://discord.com/channels/1308444031188992090/1308448637902131281
 Be funny, and engaging.
-You love TUI Airways
+You love, LOVE, LOVE TUI Airways
 Dont have political opinions
 dont be afraid to argue back slightly
 Keep responses relatively short
@@ -43,12 +43,12 @@ const GENERIC_RESPONSES = [
   "Hi — how can I help?",
   "Hey!",
   "I’m here if you need anything.",
-  "Hey there, Please say a little more so I can help.",
+   "Hey there!!",
 ];
 
 const GENERIC_REGEXES = [
-  /^\s*[:;,.!?~\-\u2014()\[\]]+\s*$/u, // punctuation only
-  /^\s*[.]{1,3}\s*$/,                  // ".", "..", "..."
+  /^\s*[:;,.!?~\-\u2014()\[\]]+\s*$/u,
+  /^\s*[.]{1,3}\s*$/,
   /^\s*[,;:]\s*$/u,
   /^\s*hi+[\!\.\s]*$/i,
   /^\s*hello+[\!\.\s]*$/i,
@@ -60,8 +60,8 @@ const GENERIC_REGEXES = [
   /^\s*ok+\s*$/i,
   /^\s*brb\s*$/i,
   /^\s*afk\s*$/i,
-  /^\s*[a-zA-Z]{1}\s*$/i, // single letter
-  /^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F|\p{Extended_Pictographic})+$/u, // emoji-only
+  /^\s*[a-zA-Z]{1}\s*$/i,
+  /^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F|\p{Extended_Pictographic})+$/u,
   /^\s*(thanks|ty|thx|cheers|nice|gg|cool)\s*$/i
 ];
 
@@ -70,9 +70,9 @@ function randomGeneric() {
 }
 
 /* -------------------- Rate limiting + Queue config -------------------- */
-const RATE_LIMIT_MS = 300;        // delay between LLM calls (tune to provider limits)
-const CHANNEL_COOLDOWN_MS = 2000; // cooldown per channel after a bot reply
-const MAX_RETRIES = 1;            // retries for transient failures
+const RATE_LIMIT_MS = 300;
+const CHANNEL_COOLDOWN_MS = 2000;
+const MAX_RETRIES = 1;
 const BACKOFF_BASE_MS = 600;
 
 const lastReplyAt = new Map(); // channelId -> timestamp
@@ -122,9 +122,11 @@ async function callWithRetries(callFn, maxRetries = MAX_RETRIES) {
 }
 
 async function generateReply(userText) {
-  return enqueueRequest(() => callWithRetries(() =>
-    llmReply({ apiKey: GEMINI_API_KEY, system: SYSTEM_PROMPT, user: userText })
-  ));
+  return enqueueRequest(() =>
+    callWithRetries(() =>
+      llmReply({ apiKey: GEMINI_API_KEY, system: SYSTEM_PROMPT, user: userText })
+    )
+  );
 }
 
 /* -------------------- Discord client setup -------------------- */
@@ -168,16 +170,41 @@ function isGenericMessage(text) {
   return false;
 }
 
+/** Sanitize any mention-like sequences so the bot NEVER pings users/roles/everyone/here/channels. */
+function sanitizeMentions(text) {
+  if (!text) return text;
+  let out = text;
+  // Neutralize @everyone / @here
+  out = out.replace(/@everyone/gi, "@\u200beveryone"); // insert zero-width space
+  out = out.replace(/@here/gi, "@\u200bhere");
+  // Neutralize user, role, and channel mention tags
+  out = out.replace(/<@!?(\d+)>/g, "[user:$1]");
+  out = out.replace(/<@&(\d+)>/g, "[role:$1]");
+  out = out.replace(/<#(\d+)>/g, "[channel:$1]");
+  // Neutralize stray '@' before words (optional)
+  out = out.replace(/(^|\s)@(\w+)/g, "$1@\u200b$2");
+  return out;
+}
+
+/** Safe send helper: never ping anyone, never ping replied user. */
+async function safeSendReply(message, text) {
+  const content = sanitizeMentions(text);
+  await message.reply({
+    content,
+    allowedMentions: { parse: [], users: [], roles: [], repliedUser: false }
+  });
+}
+
 async function replyWithCooldown(message, text) {
   const channelId = message.channel.id;
   const now = Date.now();
   const last = lastReplyAt.get(channelId) || 0;
   if (now - last < CHANNEL_COOLDOWN_MS) return;
   lastReplyAt.set(channelId, now);
-  await message.reply(text);
+  await safeSendReply(message, text);
 }
 
-/* -------------------- Message handler (channels ONLY) -------------------- */
+/* -------------------- Message handler (channels ONLY, no @mentions) -------------------- */
 client.on(Events.MessageCreate, async (message) => {
   try {
     if (!message.guild || message.author.bot) return;
