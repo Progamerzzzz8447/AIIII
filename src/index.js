@@ -2,6 +2,8 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Partials, Events, ChannelType } from "discord.js";
 import { llmReply } from "./llm.js";
 
+---
+   
 /* =============================================================================
    🧠 PERSONALITY — EDIT THIS BLOCK
    -----------------------------------------------------------------------------
