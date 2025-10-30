@@ -383,10 +383,10 @@ export const KEYWORD_RESPONSES = [
 ];
 
 export const FALLBACK_RESPONSES = [
-  "Got it — if you need a human, ask in <#1308448637902131281>.",
-  "Noted. Want me to point you to support? <#1308448637902131281>",
-  "If you’re stuck, check <#1331332426647081143> or ask in <#1308448637902131281>.",
-  "I can help with basics — for anything tricky, ping <#1308448637902131281>.",
+  "Got it — if you need a human, ask in https://discord.com/channels/1308444031188992090/1308448637902131281.",
+  "Noted. Want me to point you to support? https://discord.com/channels/1308444031188992090/1308448637902131281",
+  "If you’re stuck, check https://discord.com/channels/1308444031188992090/1308448637902131281.",
+  "I can help with basics — for anything tricky, check https://discord.com/channels/1308444031188992090/1308448637902131281.",
   "Cool. What else can I do for you? ✈️",
 ];
 
