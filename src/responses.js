@@ -330,73 +330,137 @@ export const EXACT_MATCH_ENTRIES = [
   ["goodbye", "See you soon!\nDon’t forget <#1331332426647081143> for flights."],
 ];
 
+
+/* ===================== Tools for normalization ===================== */
 export function normalizeExact(s) {
   return (s || "").trim().toLowerCase();
 }
 
 export function buildExactMap(entries = EXACT_MATCH_ENTRIES) {
-  return new Map(entries.map(([k, v]) => [normalizeExact(k), v]));
+  // still exported for compatibility; not used in API-first flow
+  const m = new Map();
+  for (const row of entries) {
+    const [triggers, reply] = row;
+    const arr = Array.isArray(triggers) ? triggers : [triggers];
+    for (const t of arr) m.set(normalizeExact(t), reply);
+  }
+  return m;
 }
 
-/* ===================== Keyword/regex library (used on API failure) ===================== */
-export const KEYWORD_RESPONSES = [
-  {
-    patterns: [/apply|application|staff form/i],
-    reply: "Apply here: <#1362419467753361519> (good luck!)."
-  },
-  {
-    patterns: [/support|help|ticket|issue|problem/i],
-    reply: "Drop it in <#1308448637902131281> and we’ll take a look."
-  },
-  {
-    patterns: [/next\s*flight|when.*flight|flight\s*(time|schedule)/i],
-    reply: "Flight schedule’s here: <#1331332426647081143>."
-  },
-  {
-    patterns: [/join.*flight|how.*join/i],
-    reply: "See <#1331332426647081143> or ask in <#1308448637902131281>."
-  },
-  {
-    patterns: [/(cant|can't|cannot).*join|join.*fail/i],
-    reply: "Might be no active flight. Try: Game → Server Selection → server with 15+ players → Play."
-  },
-  {
-    patterns: [/rules|guidelines|ban|mute|appeal/i],
-    reply: "If it’s moderation-related, contact us in <#1308448637902131281>."
-  },
-  {
-    patterns: [/game\s*(link|ip|server)/i],
-    reply: "Find active servers via Server Selection. If stuck, ask in <#1308448637902131281>."
-  },
-  {
-    patterns: [/discord|invite|link/i],
-    reply: "You’re already here 😄 — if you need a specific link, ask in <#1308448637902131281>."
-  },
-  {
-    patterns: [/dev|developer|commission|hire/i],
-    reply: "Pop details in <#1308448637902131281> and we’ll point you right."
-  },
-  {
-    patterns: [/thanks|thank you|ty|cheers/i],
-    reply: "Anytime! ✈️"
-  }
-];
+const PUNCT_RX = /[^\p{L}\p{N}\s]/gu;
+const MULTISPACE_RX = /\s+/g;
 
+function stripDiacritics(str) {
+  return str.normalize?.("NFD").replace(/[\u0300-\u036f]/g, "") || str;
+}
+export function normalizeForMatch(s) {
+  return stripDiacritics(String(s || "").toLowerCase())
+    .replace(PUNCT_RX, " ")
+    .replace(MULTISPACE_RX, " ")
+    .trim();
+}
+export function tokenize(s) {
+  const n = normalizeForMatch(s);
+  return n ? n.split(" ") : [];
+}
+function tokenSet(arr) {
+  const s = new Set();
+  for (const t of arr) if (t) s.add(t);
+  return s;
+}
+
+/* lightweight similarity helpers */
+function jaccard(aSet, bSet) {
+  let inter = 0;
+  for (const x of aSet) if (bSet.has(x)) inter++;
+  const union = aSet.size + bSet.size - inter || 1;
+  return inter / union;
+}
+function containsAll(needles, hay) {
+  for (const n of needles) if (!hay.has(n)) return false;
+  return true;
+}
+
+/* Normalize slang/variants for better recall */
+const REPLACEMENTS = [
+  ["cant", "can't"],
+  ["cannot", "can't"],
+  ["wont", "won't"],
+  ["dont", "don't"],
+  ["pls", "please"],
+  ["u", "you"],
+];
+function expand(s) {
+  let t = ` ${normalizeForMatch(s)} `;
+  for (const [from, to] of REPLACEMENTS) t = t.replaceAll(` ${from} `, ` ${to} `);
+  return t.trim();
+}
+
+/* ===================== Fuzzy pick from EXACT_MATCH_ENTRIES ===================== */
+/**
+ * Try to find the best reply from EXACT_MATCH_ENTRIES:
+ * 1) Exact equality on any trigger -> immediate return
+ * 2) Substring-style token containment (all tokens of a short trigger appear)
+ * 3) Jaccard token similarity over triggers; pick the highest above threshold
+ */
+export function bestApproxFromExact(userText, {
+  minContainTokens = 2,    // small triggers must all be present
+  jaccardThreshold = 0.35, // tolerant for short phrases
+  preferContainment = true
+} = {}) {
+  const raw = userText || "";
+  const norm = normalizeExact(raw);
+  const exp = expand(raw);
+  const userTokens = tokenize(exp);
+  const userSet = tokenSet(userTokens);
+
+  let bestReply = null;
+  let bestScore = 0;
+
+  for (const row of EXACT_MATCH_ENTRIES) {
+    const [triggers, reply] = row;
+    const list = Array.isArray(triggers) ? triggers : [triggers];
+
+    for (const trig of list) {
+      const trigNorm = normalizeExact(trig);
+      if (norm === trigNorm) return reply; // exact hit
+
+      const tks = tokenize(trigNorm);
+      const tset = tokenSet(tks);
+
+      // containment for short triggers (e.g., "next flight")
+      if (preferContainment && tks.length > 0 && tks.length <= 5) {
+        const allIn = containsAll(tset, userSet);
+        if (allIn && tks.length >= minContainTokens) {
+          // containment scores slightly higher than pure jaccard to prefer specific phrases
+          const score = 1.0 - 0.001 * tks.length;
+          if (score > bestScore) { bestScore = score; bestReply = reply; }
+          continue;
+        }
+      }
+
+      // jaccard similarity as a fallback
+      const jac = jaccard(userSet, tset);
+      if (jac >= jaccardThreshold && jac > bestScore) {
+        bestScore = jac;
+        bestReply = reply;
+      }
+    }
+  }
+
+  return bestReply;
+}
+
+/* ============== Back-compat export (index imports bestKeywordReply) ============== */
+export function bestKeywordReply(text) {
+  return bestApproxFromExact(text);
+}
+
+/* ===================== Broad fallbacks ===================== */
 export const FALLBACK_RESPONSES = [
-  "Got it — if you need a human, ask in https://discord.com/channels/1308444031188992090/1308448637902131281.",
-  "Noted. Want me to point you to support? https://discord.com/channels/1308444031188992090/1308448637902131281",
-  "If you’re stuck, check https://discord.com/channels/1308444031188992090/1308448637902131281.",
-  "I can help with basics — for anything tricky, check https://discord.com/channels/1308444031188992090/1308448637902131281.",
+  "Got it — if you need a human, ask in <#1308448637902131281>.",
+  "Noted. Want me to point you to support? <#1308448637902131281>",
+  "If you’re stuck, check <#1331332426647081143> or ask in <#1308448637902131281>.",
+  "I can help with basics — for anything tricky, ping <#1308448637902131281>.",
   "Cool. What else can I do for you? ✈️",
 ];
-
-export function bestKeywordReply(text) {
-  let best = null;
-  let bestScore = 0;
-  for (const entry of KEYWORD_RESPONSES) {
-    let score = 0;
-    for (const rx of entry.patterns) if (rx.test(text)) score++;
-    if (score > bestScore) { bestScore = score; best = entry.reply; }
-  }
-  return (bestScore > 0) ? best : null;
-}
