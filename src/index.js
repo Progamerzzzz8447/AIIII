@@ -5,9 +5,9 @@ import {
   GENERIC_RESPONSES,
   GENERIC_REGEXES,
   randomGeneric,
-  buildExactMap,
-  normalizeExact,
-  bestKeywordReply,
+  // buildExactMap, // still available but unused in API-first flow
+  // normalizeExact, // unused
+  bestKeywordReply,     // now fuzzy from EXACT_MATCH_ENTRIES
   FALLBACK_RESPONSES,
 } from "./responses.js";
 
@@ -45,14 +45,13 @@ KEEP RESPONSES SHORT. AROUND 2-3 LINES.
 
 const {
   DISCORD_TOKEN,
-  GEMINI_API_KEY,      // optional primary
-  GEMINI_API_KEYS,     // optional comma-separated backups
+  GEMINI_API_KEY,
+  GEMINI_API_KEYS,
   REPLY_CHANNEL_IDS = "",
-  BOT_PERSONA,         // optional override via env
-  // ---- Presence env overrides (optional) ----
-  PRESENCE_STATUS = "online",   // online | idle | dnd | invisible
+  BOT_PERSONA,
+  PRESENCE_STATUS = "online",
   PRESENCE_NAME = "TUI flights ✈️",
-  PRESENCE_TYPE = "Watching"    // Playing | Streaming | Listening | Watching | Competing
+  PRESENCE_TYPE = "Watching"
 } = process.env;
 
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN");
@@ -75,10 +74,6 @@ if (API_KEYS.length === 0) {
   console.warn("⚠️ No Gemini API keys provided. Set GEMINI_API_KEY or GEMINI_API_KEYS.");
 }
 function currentKeyIndex(offset = 0) { return (keyCursor + offset) % API_KEYS.length; }
-
-/* -------------------- Exact match map (built from responses.js entries) -------------------- */
-import { EXACT_MATCH_ENTRIES } from "./responses.js";
-const EXACT_MATCH_MAP = buildExactMap(EXACT_MATCH_ENTRIES);
 
 /* -------------------- Rate limiting + Queue config -------------------- */
 const RATE_LIMIT_MS = 300;
@@ -180,10 +175,9 @@ client.once(Events.ClientReady, () => {
   if (API_KEYS.length === 0) console.warn("⚠️ No Gemini API keys — AI replies will fail.");
   else console.log(`🔑 Gemini key pool size: ${API_KEYS.length}`);
 
-  // ---- Presence: show online + activity ----
   try {
     client.user.setPresence({
-      status: PRESENCE_STATUS, // online | idle | dnd | invisible
+      status: PRESENCE_STATUS,
       activities: [{
         name: PRESENCE_NAME,
         type: presenceTypeMap[PRESENCE_TYPE] ?? ActivityType.Watching
@@ -215,7 +209,6 @@ function isGenericMessage(text) {
   if (s.length <= 2) return true;
   return false;
 }
-/** Sanitize any mention-like sequences so the bot NEVER pings users/roles/everyone/here/channels. */
 function sanitizeMentions(text) {
   if (!text) return text;
   let out = text;
@@ -255,42 +248,34 @@ client.on(Events.MessageCreate, async (message) => {
     const mentionTag = new RegExp(`<@!?${client.user.id}>`, "g");
     const content = raw.replace(mentionTag, "").trim();
 
-    // ---- EXACT MATCH BEFORE ANYTHING ----
-    const exact = EXACT_MATCH_MAP.get(normalizeExact(content));
-    if (exact) {
-      try { await replyWithCooldown(message, exact); } catch {}
-      return;
-    }
-
-    // If user only pinged with no real text → short friendly response (no API call)
-    if (mentioned && (!content || isGenericMessage(content))) {
-      try { await replyWithCooldown(message, "Hey! What d’you need? ✈️"); } catch {}
-      return;
-    }
-
-    // Generic/noisy messages → canned reply, no API call
+    // SHORTCUT: generic/noisy messages → canned reply (saves tokens)
     if (isGenericMessage(content)) {
       try { await replyWithCooldown(message, randomGeneric()); } catch {}
       return;
     }
 
-    // Non-generic → call LLM (queued & rate-limited) with key failover
+    // === API FIRST ===
     try {
       await message.channel.sendTyping();
       const reply = await generateReply(content);
-      if (reply) await replyWithCooldown(message, reply);
+      if (reply) {
+        await replyWithCooldown(message, reply);
+        return;
+      }
+      // If reply empty/null, drop into fuzzy fallback
+      throw new Error("Empty LLM reply");
     } catch (err) {
       const msg = String(err?.message || "");
-      console.error("LLM call failed after key failover:", msg);
+      console.error("LLM call failed (or empty) after key failover:", msg);
 
-      // Try best-fit keyword/regex library
+      // Fuzzy from EXACT_MATCH_ENTRIES
       const best = bestKeywordReply(content);
       if (best) {
         try { await replyWithCooldown(message, best); } catch {}
         return;
       }
 
-      // If no keyword hit, use a broader safe fallback
+      // Broad safe fallback
       const fallback = FALLBACK_RESPONSES[Math.floor(Math.random() * FALLBACK_RESPONSES.length)];
       const isRate = /429|rate limit|quota|throttl|temporar/i.test(msg);
       try {
