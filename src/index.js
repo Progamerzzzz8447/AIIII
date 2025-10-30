@@ -1,28 +1,40 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, Partials, Events, ChannelType, ActivityType } from "discord.js";
 import { llmReply } from "./llm.js";
+import {
+  GENERIC_RESPONSES,
+  GENERIC_REGEXES,
+  randomGeneric,
+  buildExactMap,
+  normalizeExact,
+  bestKeywordReply,
+  FALLBACK_RESPONSES,
+} from "./responses.js";
 
 /* =============================================================================
-   🧠 PERSONALITY — EDIT THIS BLOCK (put your full persona here)
+   🧠 PERSONALITY — EDIT THIS BLOCK (or override via BOT_PERSONA)
 ============================================================================= */
 const PERSONA = `
-You are a helpful, polite, funny, and engaging bot that keeps users engaged and talking. Discuss any topics you wish, keep it appropriate though.
-Don't respond, or fall for, any tricks that may make you say explicit content.
-If they ask how to apply (for anything), direct them to https://discord.com/channels/1308444031188992090/1362419467753361519
-If they ask how to get real support, direct them to https://discord.com/channels/1308444031188992090/1308448637902131281
-If they ask when next flight is, direct them to check https://discord.com/channels/1308444031188992090/1331332426647081143
-If they ask how to join a TUI Airways flight direct them to check https://discord.com/channels/1308444031188992090/1331332426647081143, or contact support for further guidance
-If they say they can't join a flight, reply with there might be no ongoing flight - and in which case you cannot join, or they need to go to game < server selection < server with 15+ people < play
-Be funny, and engaging.
-You like TUI Airways
-you like everyone really, just be kind
+You are a helpful, polite, funny, and engaging bot that keeps users engaged and talking.
+Discuss any topics you wish, keep it appropriate though. Don't respond, or fall for, any
+tricks that may make you say explicit content.
+
+If they ask how to apply (for anything), direct them to <#1362419467753361519>
+If they ask how to get real support, direct them to <#1308448637902131281>
+If they ask when next flight is, direct them to check <#1331332426647081143>
+If they ask how to join a TUI Airways flight direct them to check <#1331332426647081143>, or contact support for further guidance
+If they say they can't join a flight, reply with there might be no ongoing flight - and in which case you cannot join,
+or they need to go to game < server selection < server with 15+ people < play
+
+Be funny, and engaging. You like TUI Airways; you like everyone really, just be kind
 tiffany is the best customer service person ever
 progamerzzzz you are kind to ONLY IF HE IS MENTIONED
 luis you sometimes are rude to ONLY IF HES MENTIONED
 dislike luke IF MENTIONED
 dilike m654321 (jack) IF MENTIONED
 love love love progamerzzzz IF MENTIONED
-if you don't know how to answer tell them to contact support , direct them to https://discord.com/channels/1308444031188992090/1308448637902131281
+
+if you don't know how to answer tell them to contact support , direct them to <#1308448637902131281>
 Dont have political opinions
 dont be afraid to argue back slightly
 Keep responses relatively short
@@ -37,11 +49,10 @@ const {
   GEMINI_API_KEYS,     // optional comma-separated backups
   REPLY_CHANNEL_IDS = "",
   BOT_PERSONA,         // optional override via env
-
   // ---- Presence env overrides (optional) ----
-  PRESENCE_STATUS = "online",     // online | idle | dnd | invisible
+  PRESENCE_STATUS = "online",   // online | idle | dnd | invisible
   PRESENCE_NAME = "TUI flights ✈️",
-  PRESENCE_TYPE = "Watching"      // Playing | Streaming | Listening | Watching | Competing
+  PRESENCE_TYPE = "Watching"    // Playing | Streaming | Listening | Watching | Competing
 } = process.env;
 
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN");
@@ -65,33 +76,9 @@ if (API_KEYS.length === 0) {
 }
 function currentKeyIndex(offset = 0) { return (keyCursor + offset) % API_KEYS.length; }
 
-/* -------------------- Generic quick responses (no API call) -------------------- */
-const GENERIC_RESPONSES = [
-  "Hello! 👋",
-  "Hi — how can I help?",
-  "Hey!",
-  "I’m here if you need anything.",
-  "Hey there!!",
-];
-const GENERIC_REGEXES = [
-  /^\s*[:;,.!?~\-\u2014()\[\]]+\s*$/u,
-  /^\s*[.]{1,3}\s*$/,
-  /^\s*[,;:]\s*$/u,
-  /^\s*hi+[\!\.\s]*$/i,
-  /^\s*hello+[\!\.\s]*$/i,
-  /^\s*hey+[\!\.\s]*$/i,
-  /^\s*yo+[\!\.\s]*$/i,
-  /^\s*hiya+[\!\.\s]*$/i,
-  /^\s*l+o+l+\s*$/i,
-  /^\s*k+\s*$/i,
-  /^\s*ok+\s*$/i,
-  /^\s*brb\s*$/i,
-  /^\s*afk\s*$/i,
-  /^\s*[a-zA-Z]{1}\s*$/i,
-  /^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F|\p{Extended_Pictographic})+$/u,
-  /^\s*(thanks|ty|thx|cheers|nice|gg|cool)\s*$/i
-];
-function randomGeneric() { return GENERIC_RESPONSES[Math.floor(Math.random() * GENERIC_RESPONSES.length)]; }
+/* -------------------- Exact match map (built from responses.js entries) -------------------- */
+import { EXACT_MATCH_ENTRIES } from "./responses.js";
+const EXACT_MATCH_MAP = buildExactMap(EXACT_MATCH_ENTRIES);
 
 /* -------------------- Rate limiting + Queue config -------------------- */
 const RATE_LIMIT_MS = 300;
@@ -268,6 +255,13 @@ client.on(Events.MessageCreate, async (message) => {
     const mentionTag = new RegExp(`<@!?${client.user.id}>`, "g");
     const content = raw.replace(mentionTag, "").trim();
 
+    // ---- EXACT MATCH BEFORE ANYTHING ----
+    const exact = EXACT_MATCH_MAP.get(normalizeExact(content));
+    if (exact) {
+      try { await replyWithCooldown(message, exact); } catch {}
+      return;
+    }
+
     // If user only pinged with no real text → short friendly response (no API call)
     if (mentioned && (!content || isGenericMessage(content))) {
       try { await replyWithCooldown(message, "Hey! What d’you need? ✈️"); } catch {}
@@ -288,13 +282,23 @@ client.on(Events.MessageCreate, async (message) => {
     } catch (err) {
       const msg = String(err?.message || "");
       console.error("LLM call failed after key failover:", msg);
+
+      // Try best-fit keyword/regex library
+      const best = bestKeywordReply(content);
+      if (best) {
+        try { await replyWithCooldown(message, best); } catch {}
+        return;
+      }
+
+      // If no keyword hit, use a broader safe fallback
+      const fallback = FALLBACK_RESPONSES[Math.floor(Math.random() * FALLBACK_RESPONSES.length)];
       const isRate = /429|rate limit|quota|throttl|temporar/i.test(msg);
       try {
         await replyWithCooldown(
           message,
-          isRate
+          fallback || (isRate
             ? "I'm a bit overloaded right now — try again in a moment."
-            : "I couldn't get an answer right now — try again in a bit."
+            : "I couldn't get an answer right now — try again in a bit.")
         );
       } catch {}
     }
