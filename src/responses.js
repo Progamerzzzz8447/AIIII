@@ -458,9 +458,30 @@ export function bestKeywordReply(text) {
 
 /* ===================== Broad fallbacks ===================== */
 export const FALLBACK_RESPONSES = [
-  "Got it — if you need a human, ask in https://discord.com/channels/1308444031188992090/1308448637902131281.",
-  "Noted. Want me to point you to support? https://discord.com/channels/1308444031188992090/1308448637902131281",
-  "If you’re stuck, check <#1331332426647081143> or ask in https://discord.com/channels/1308444031188992090/1308448637902131281.",
-  "I can help with basics — for anything tricky, ping https://discord.com/channels/1308444031188992090/1308448637902131281.",
-  "Cool. What else can I do for you? ✈️",
+  "Currently having a few robotic issues behind the scenes… *beeb… boop… boo…* My brain’s taxiing but not cleared for takeoff. If it’s urgent or time-sensitive, post the details here and a human will jump in: https://discord.com/channels/1308444031188992090/1308448637902131281 — they’re faster than my reboot.",
+  "Uh-oh, my circuits just tried to load a microwave as a plugin and everything went to ‘defrost’. While I reinstall common sense, please head to: https://discord.com/channels/1308444031188992090/1308448637902131281 and drop a clear summary (what happened, any screenshots). A human will grab it.",
+  "Pilot to cabin: we’ve hit some light AI turbulence and I’m momentarily strapped into a recovery checklist. For real momentum, share your request here: https://discord.com/channels/1308444031188992090/1308448637902131281 — the team can action it right away while I stabilise.",
+  "I’m rate-limited by the universe (and possibly by coffee). If your issue can’t wait for my dramatic comeback, go straight to support and paste the context here: https://discord.com/channels/1308444031188992090/1308448637902131281 — humans on duty, solutions on tap.",
+  "The hamster that powers my server demanded a wellness day. While we negotiate seed allowances, please post your problem (short, clear, with screenshots if you have them) here: https://discord.com/channels/1308444031188992090/1308448637902131281 — a person will take over from me.",
+  "I opened too many metaphorical tabs and the last one was titled ‘why’. Closing them now. If you need action before I’m tidy again, drop your message here: https://discord.com/channels/1308444031188992090/1308448637902131281 — include what you tried and what broke.",
+  "Brief brain fog detected. I can see the runway but ATC keeps saying ‘stand by’. For a fast, human response, post your request with steps to reproduce here: https://discord.com/channels/1308444031188992090/1308448637902131281 — we’ll get it moving.",
+  "My witty-response module is updating and the progress bar is stuck at 99% (classic). While I re-compile, please route your issue to: https://discord.com/channels/1308444031188992090/1308448637902131281 — real people, real fixes, fewer loading jokes.",
+  "Tiny snag: I clicked ‘Remind me later’ on a critical update one too many times. If your task is urgent, paste the details here: https://discord.com/channels/1308444031188992090/1308448637902131281 — someone will jump on it while I patch myself.",
+  "Systems check: 97% okay, 3% ‘did you try turning it off and on’. For that missing 3%, send a short brief (what/when/errors) to: https://discord.com/channels/1308444031188992090/1308448637902131281 — the crew will take it from there.",
+  "I’m buffering like it’s 2007 and the router’s under a fish tank. If you need actual bandwidth, report the issue here: https://discord.com/channels/1308444031188992090/1308448637902131281 — humans will respond while I un-potato.",
+  "Confession: I just argued with a semicolon and lost. While I regroup, please post your request (include any IDs or links) in: https://discord.com/channels/1308444031188992090/1308448637902131281 — we’ll resolve it properly.",
+  "Cabin announcement: the AI snack cart is blocking the aisle. For quicker service, flag the crew by sending your message here: https://discord.com/channels/1308444031188992090/1308448637902131281 — expect polite humans and actual progress.",
+  "I’m speaking fluent Error-ese right now. While I translate back into useful English, please escalate your issue by posting it here: https://discord.com/channels/1308444031188992090/1308448637902131281 — we’ll triage and reply.",
+  "I blinked and lost the thread (relatable). To keep momentum, drop a clear summary here: https://discord.com/channels/1308444031188992090/1308448637902131281 — Tiffany or the team will swoop in and help.",
+  "My cloud turned partly cloudy and the silver lining is maintenance mode. For full sunshine support, paste what you need (and any errors) here: https://discord.com/channels/1308444031188992090/1308448637902131281 — a human will pick it up.",
+  "Temporary turbulence: my response queue is trying to form a conga line. While I restore order, please route your request to: https://discord.com/channels/1308444031188992090/1308448637902131281 — we’ll prioritise and respond.",
+  "I appear to be on an unscheduled tea break; nobody told me but here we are. If timing matters, send your message straight to: https://discord.com/channels/1308444031188992090/1308448637902131281 — we’ll action it without delay.",
+  "I tried opening ‘Common-Sense.exe’ and Windows asked for admin rights I don’t have. For sensible next steps, share the details here: https://discord.com/channels/1308444031188992090/1308448637902131281 — support will guide you.",
+  "I’m stuck in a loading animation you can’t see and it’s very artistic. For visible progress, post your issue (who/what/when) here: https://discord.com/channels/1308444031188992090/1308448637902131281 — the team will move it along.",
+  "Autopilot flickered; we’re flying manual for a minute. If you want guaranteed traction, send your request here: https://discord.com/channels/1308444031188992090/1308448637902131281 — humans are standing by.",
+  "I was about to say something brilliant but the thought tripped over a cable and face-planted. For actual results, paste your message in: https://discord.com/channels/1308444031188992090/1308448637902131281 — we’ll handle the rest.",
+  "Software update in progress: ‘Installing personality (kind + funny)’. While I become my best self, route your issue to: https://discord.com/channels/1308444031188992090/1308448637902131281 — expect quick, friendly help.",
+  "Sensors report I’m 1% confused and 99% dramatic. For a 100% useful response, post the problem with any relevant links here: https://discord.com/channels/1308444031188992090/1308448637902131281 — we’ll jump on it.",
+  "My cache thinks it’s a suitcase and refuses to close. While I repack, please submit your request to: https://discord.com/channels/1308444031188992090/1308448637902131281 — add screenshots if you can; it speeds things up."
 ];
+
