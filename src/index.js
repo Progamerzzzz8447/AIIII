@@ -1,13 +1,11 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, Partials, Events, ChannelType, ActivityType } from "discord.js";
-import { llmReply } from "./llm.js";
+import { llmReply } from "./llm.js"; // ← your existing Google/Gemini caller
 import {
   GENERIC_RESPONSES,
   GENERIC_REGEXES,
   randomGeneric,
-  // buildExactMap, // still available but unused in API-first flow
-  // normalizeExact, // unused
-  bestKeywordReply,     // now fuzzy from EXACT_MATCH_ENTRIES
+  bestKeywordReply,
   FALLBACK_RESPONSES,
 } from "./responses.js";
 
@@ -45,8 +43,14 @@ KEEP RESPONSES SHORT. AROUND 2-3 LINES.
 
 const {
   DISCORD_TOKEN,
+  // Google / Gemini
   GEMINI_API_KEY,
   GEMINI_API_KEYS,
+  // Groq
+  GROQ_API_KEY,
+  GROQ_API_KEYS,
+  GROQ_MODEL = "llama-3.1-8b-instant", // fast, sensible default
+  // Bot config
   REPLY_CHANNEL_IDS = "",
   BOT_PERSONA,
   PRESENCE_STATUS = "online",
@@ -59,21 +63,28 @@ if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN");
 const SYSTEM_PROMPT = (BOT_PERSONA && BOT_PERSONA.trim()) || PERSONA;
 const ALLOWED_IDS = new Set(REPLY_CHANNEL_IDS.split(",").map(s => s.trim()).filter(Boolean));
 
-/* -------------------- Build rotating API key pool -------------------- */
-const apiKeyPool = [
+/* -------------------- Build rotating API key pools -------------------- */
+// Google pool
+const googlePoolRaw = [
   ...(GEMINI_API_KEY ? [GEMINI_API_KEY] : []),
   ...(GEMINI_API_KEYS ? GEMINI_API_KEYS.split(",").map(s => s.trim()).filter(Boolean) : [])
 ].filter(Boolean);
+const GOOGLE_KEYS = dedupeStable(googlePoolRaw);
+let googleCursor = 0;
 
-// De-duplicate while preserving order
-const seen = new Set();
-const API_KEYS = apiKeyPool.filter(k => (seen.has(k) ? false : (seen.add(k), true)));
-let keyCursor = 0;
+// Groq pool
+const groqPoolRaw = [
+  ...(GROQ_API_KEY ? [GROQ_API_KEY] : []),
+  ...(GROQ_API_KEYS ? GROQ_API_KEYS.split(",").map(s => s.trim()).filter(Boolean) : [])
+].filter(Boolean);
+const GROQ_KEYS = dedupeStable(groqPoolRaw);
+let groqCursor = 0;
 
-if (API_KEYS.length === 0) {
-  console.warn("⚠️ No Gemini API keys provided. Set GEMINI_API_KEY or GEMINI_API_KEYS.");
+function dedupeStable(arr) {
+  const seen = new Set();
+  return arr.filter(k => (seen.has(k) ? false : (seen.add(k), true)));
 }
-function currentKeyIndex(offset = 0) { return (keyCursor + offset) % API_KEYS.length; }
+function nextIndex(i, len) { return i % Math.max(len, 1); }
 
 /* -------------------- Rate limiting + Queue config -------------------- */
 const RATE_LIMIT_MS = 300;
@@ -96,7 +107,7 @@ async function processQueue() {
   while (requestQueue.length) {
     const { fn, resolve, reject } = requestQueue.shift();
     try { resolve(await fn()); } catch (err) { reject(err); }
-    await new Promise(r => setTimeout(r, RATE_LIMIT_MS));
+    await sleep(RATE_LIMIT_MS);
   }
   processingQueue = false;
 }
@@ -105,7 +116,7 @@ function isRetryableError(err) {
   const msg = String(err?.message || "");
   const lower = msg.toLowerCase();
   const isRate = lower.includes("429") || /rate limit|quota|throttl|temporar/i.test(lower);
-  const isNetworkOr5xx = /5\d{2}|timeout|network/i.test(lower);
+  const isNetworkOr5xx = /(^|[^\d])5\d{2}([^\d]|$)|timeout|network/i.test(lower);
   return isRate || isNetworkOr5xx;
 }
 
@@ -118,35 +129,114 @@ async function callWithRetries(callFn, maxRetries = MAX_RETRIES) {
       if (!isRetryableError(err) || attempt > maxRetries) throw err;
       const backoff = BACKOFF_BASE_MS * Math.pow(2, attempt - 1);
       console.warn(`Retrying LLM call in ${backoff}ms (attempt ${attempt}) due to:`, String(err?.message || ""));
-      await new Promise(r => setTimeout(r, backoff));
+      await sleep(backoff);
     }
   }
 }
 
-/* -------------------- LLM call with key failover -------------------- */
-async function callLLMWithKey(key, userText) {
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/* -------------------- LLM calls (Google first, then Groq) -------------------- */
+// Wrap your existing llmReply (Google/Gemini) with queue + retries + key rotation
+async function callGoogleWithKey(key, userText) {
   return enqueueRequest(() =>
     callWithRetries(() =>
       llmReply({ apiKey: key, system: SYSTEM_PROMPT, user: userText })
     )
   );
 }
-async function generateReply(userText) {
-  if (API_KEYS.length === 0) throw new Error("No API keys configured");
+
+async function generateWithGoogle(userText) {
+  if (GOOGLE_KEYS.length === 0) throw new Error("No Google (Gemini) API keys configured");
   let lastErr;
-  for (let i = 0; i < API_KEYS.length; i++) {
-    const idx = currentKeyIndex(i);
-    const key = API_KEYS[idx];
+  for (let i = 0; i < GOOGLE_KEYS.length; i++) {
+    const idx = nextIndex(googleCursor + i, GOOGLE_KEYS.length);
+    const key = GOOGLE_KEYS[idx];
     try {
-      const out = await callLLMWithKey(key, userText);
-      keyCursor = idx; // stick to the working key
+      const out = await callGoogleWithKey(key, userText);
+      googleCursor = idx; // stick to the working key
       return out;
     } catch (err) {
       lastErr = err;
-      console.warn(`🔑 Key #${idx + 1} failed (${err?.message || err}). Trying next key...`);
+      console.warn(`🔑 Google key #${idx + 1} failed (${err?.message || err}). Trying next Google key...`);
     }
   }
-  throw new Error(`All API keys failed. Last error: ${lastErr?.message || lastErr}`);
+  throw new Error(`All Google keys failed. Last error: ${lastErr?.message || lastErr}`);
+}
+
+// Native Groq call (OpenAI-compatible Chat Completions)
+async function callGroqWithKey(key, userText) {
+  return enqueueRequest(() =>
+    callWithRetries(async () => {
+      const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${key}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: GROQ_MODEL,
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userText }
+          ],
+          temperature: 0.6,
+          max_tokens: 512
+        })
+      });
+
+      if (!resp.ok) {
+        const text = await safeText(resp);
+        throw new Error(`Groq HTTP ${resp.status}: ${text || resp.statusText}`);
+      }
+      const data = await resp.json();
+      const content = data?.choices?.[0]?.message?.content ?? "";
+      if (!content || typeof content !== "string") throw new Error("Groq empty reply");
+      return content.trim();
+    })
+  );
+}
+
+async function generateWithGroq(userText) {
+  if (GROQ_KEYS.length === 0) throw new Error("No Groq API keys configured");
+  let lastErr;
+  for (let i = 0; i < GROQ_KEYS.length; i++) {
+    const idx = nextIndex(groqCursor + i, GROQ_KEYS.length);
+    const key = GROQ_KEYS[idx];
+    try {
+      const out = await callGroqWithKey(key, userText);
+      groqCursor = idx; // stick to the working key
+      return out;
+    } catch (err) {
+      lastErr = err;
+      console.warn(`🔑 Groq key #${idx + 1} failed (${err?.message || err}). Trying next Groq key...`);
+    }
+  }
+  throw new Error(`All Groq keys failed. Last error: ${lastErr?.message || lastErr}`);
+}
+
+async function safeText(resp) {
+  try { return await resp.text(); } catch { return ""; }
+}
+
+/* -------------------- Unified generator (Google → Groq → fallback) -------------------- */
+async function generateReply(userText) {
+  // 1) Google first
+  try {
+    return await generateWithGoogle(userText);
+  } catch (googleErr) {
+    console.warn("🟥 Google/Gemini path failed:", googleErr?.message || googleErr);
+  }
+
+  // 2) Groq second
+  try {
+    return await generateWithGroq(userText);
+  } catch (groqErr) {
+    console.warn("🟧 Groq path failed:", groqErr?.message || groqErr);
+  }
+
+  // 3) Keyword reply (only if both providers fail)
+  return null; // signal to caller to use bestKeywordReply → FALLBACK_RESPONSES
 }
 
 /* -------------------- Discord client setup -------------------- */
@@ -172,8 +262,9 @@ client.once(Events.ClientReady, () => {
   console.log(ALLOWED_IDS.size
     ? `💬 Auto-reply enabled for channels: ${Array.from(ALLOWED_IDS).join(", ")}`
     : "⚠️ REPLY_CHANNEL_IDS empty; channel auto-reply disabled");
-  if (API_KEYS.length === 0) console.warn("⚠️ No Gemini API keys — AI replies will fail.");
-  else console.log(`🔑 Gemini key pool size: ${API_KEYS.length}`);
+
+  console.log(`🔑 Google key pool size: ${GOOGLE_KEYS.length}`);
+  console.log(`🟣 Groq key pool size: ${GROQ_KEYS.length}`);
 
   try {
     client.user.setPresence({
@@ -217,7 +308,7 @@ function sanitizeMentions(text) {
   out = out.replace(/<@!?(\d+)>/g, "[user:$1]");
   out = out.replace(/<@&(\d+)>/g, "[role:$1]");
   out = out.replace(/<#(\d+)>/g, "[channel:$1]");
-  out = out.replace(/(^|\s)@(\w+)/g, "$1@\u200b$2");
+  out = out.replace(/(^|\\s)@(\\w+)/g, "$1@\\u200b$2");
   return out;
 }
 async function safeSendReply(message, text) {
@@ -254,39 +345,32 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
-    // === API FIRST ===
+    // === API FIRST (Google → Groq) ===
+    let reply = null;
     try {
       await message.channel.sendTyping();
-      const reply = await generateReply(content);
-      if (reply) {
-        await replyWithCooldown(message, reply);
-        return;
-      }
-      // If reply empty/null, drop into fuzzy fallback
-      throw new Error("Empty LLM reply");
-    } catch (err) {
-      const msg = String(err?.message || "");
-      console.error("LLM call failed (or empty) after key failover:", msg);
-
-      // Fuzzy from EXACT_MATCH_ENTRIES
-      const best = bestKeywordReply(content);
-      if (best) {
-        try { await replyWithCooldown(message, best); } catch {}
-        return;
-      }
-
-      // Broad safe fallback
-      const fallback = FALLBACK_RESPONSES[Math.floor(Math.random() * FALLBACK_RESPONSES.length)];
-      const isRate = /429|rate limit|quota|throttl|temporar/i.test(msg);
-      try {
-        await replyWithCooldown(
-          message,
-          fallback || (isRate
-            ? "I'm a bit overloaded right now — try again in a moment."
-            : "I couldn't get an answer right now — try again in a bit.")
-        );
-      } catch {}
+      reply = await generateReply(content);
+    } catch (e) {
+      console.error("Unified LLM pipeline failed:", e?.message || e);
     }
+
+    if (reply) {
+      try { await replyWithCooldown(message, reply); } catch {}
+      return;
+    }
+
+    // Fuzzy from EXACT_MATCH_ENTRIES
+    const best = bestKeywordReply(content);
+    if (best) {
+      try { await replyWithCooldown(message, best); } catch {}
+      return;
+    }
+
+    // Broad safe fallback
+    const fallback = FALLBACK_RESPONSES[Math.floor(Math.random() * FALLBACK_RESPONSES.length)];
+    try {
+      await replyWithCooldown(message, fallback || "I couldn't get an answer right now — try again in a bit.");
+    } catch {}
   } catch (err) {
     console.error("Message handler error:", err);
     try { await replyWithCooldown(message, "Hit an error. Check logs/API keys."); } catch {}
