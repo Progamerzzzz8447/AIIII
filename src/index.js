@@ -322,6 +322,46 @@ function sanitizeMentions(text) {
   out = out.replace(/(^|\\s)@(\\w+)/g, "$1@\\u200b$2");
   return out;
 }
+
+/**
+ * Build an LLM prompt including the last `limit` messages in the channel
+ * (oldest → newest), then highlight the final user message to answer.
+ */
+async function buildChannelPrompt(message, cleanedContent, limit = 8) {
+  const fetched = await message.channel.messages.fetch({ limit });
+
+  const sorted = Array.from(fetched.values()).sort(
+    (a, b) => a.createdTimestamp - b.createdTimestamp
+  );
+
+  const lines = [];
+  for (const msg of sorted) {
+    if (!msg.content || msg.type !== 0) continue; // ignore system / empty
+
+    const isBot = msg.author.bot;
+    const name =
+      msg.member?.displayName ||
+      msg.author?.username ||
+      (isBot ? "Bot" : "User");
+
+    lines.push(`${isBot ? "[BOT]" : "[USER]"} ${name}: ${msg.content}`);
+  }
+
+  const transcript = lines.join("\n");
+  const lastText = cleanedContent && cleanedContent.length
+    ? cleanedContent
+    : (message.content ?? "");
+
+  return [
+    "You are a Discord assistant responding in a server channel.",
+    "Here is recent context from this channel (oldest first):",
+    transcript || "(no previous messages in this channel)",
+    "",
+    "Only answer the final user message. Use the context for understanding, but do not repeat the entire transcript.",
+    `Final user message to answer: ${message.author.username}: ${lastText}`
+  ].join("\n");
+}
+
 async function safeSendReply(message, text) {
   const content = sanitizeMentions(text);
   await message.reply({ content, allowedMentions: { parse: [], users: [], roles: [], repliedUser: false } });
@@ -356,11 +396,12 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
-    // === API FIRST (Google → Groq) ===
+    // === API FIRST (Google → Groq) with channel context (last 8 msgs) ===
     let reply = null;
     try {
       await message.channel.sendTyping();
-      reply = await generateReply(content);
+      const userPrompt = await buildChannelPrompt(message, content, 8);
+      reply = await generateReply(userPrompt);
     } catch (e) {
       console.error("Unified LLM pipeline failed:", e?.message || e);
     }
